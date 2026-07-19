@@ -1,7 +1,6 @@
 import streamlit as st
-import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import io
 
 # --- Streamlitのロゴやメニューを完全に隠す設定 ---
@@ -31,21 +30,23 @@ st.write("---")
 uploaded_file = st.file_uploader("写真をアップロードしてください（jpg, png）", type=["jpg", "png", "jpeg"])
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    image_np = np.array(image)
-    h, w, _ = image_np.shape
+    # 画像の読み込み (PILオブジェクトとして扱う)
+    image = Image.open(uploaded_file).convert("RGB")
+    w, h = image.size
     
     col1, col2 = st.columns(2)
-    annotated_image = image_np.copy()
+    
+    # 描画用のオブジェクトを作成
+    annotated_image = image.copy()
+    draw = ImageDraw.Draw(annotated_image)
     
     pts = {}
-    
-    # 🆕 色の指定をRGBの正しい値に修正（純粋な単色ドットにします）
+    # PIL用の確実なRGBカラー指定
     colors = {
-        "P1": (255, 0, 0),    # 赤 (赤、緑、青の順)
+        "P1": (255, 0, 0),    # 赤
         "P2": (0, 255, 0),    # 緑
-        "P3": (0, 0, 255),    # 青
-        "P4": (0, 255, 255)   # 黄
+        "P3": (0, 120, 255),  # 青
+        "P4": (255, 215, 0)   # 黄
     }
     
     with col2:
@@ -123,31 +124,38 @@ if uploaded_file is not None:
         elif total_score >= 60: st.warning(status_text)
         else: st.error(status_text)
 
-    # --- 🎨 画像描画処理（完全にリニューアル） ---
+    # --- 🎨 画像描画処理（PILで確実に上書き） ---
     pt_list = list(pts.values())
     
-    # 骨格線の描画（シンプルな細いグレーの線）
+    # 1. 骨格線の描画（グレーの細い線）
     for i in range(len(pt_list) - 1):
-        cv2.line(annotated_image, pt_list[i], pt_list[i+1], (180, 180, 180), 2, cv2.LINE_AA)
+        draw.line([pt_list[i], pt_list[i+1]], fill=(180, 180, 180), width=3)
 
-    # 🆕 各パーツに「単色のドット」を描画（白丸のコードを完全に撤去）
+    # 2. 🆕 各パーツに「単色のドット」を描画（白丸のバグを完全回避）
+    radius = max(8, int(w * 0.015)) # 写真のサイズに合わせた適切な丸の大きさ
     for name, pos in pts.items():
         color = colors.get(name, (255, 255, 255))
-        # 色が反転しないようRGBの順で綺麗に丸を描画
-        cv2.circle(annotated_image, pos, 12, (int(color[0]), int(color[1]), int(color[2])), -1)
+        left_up = (pos[0] - radius, pos[1] - radius)
+        right_down = (pos[0] + radius, pos[1] + radius)
+        # 完全に塗りつぶされた綺麗な色の丸を描きます
+        draw.ellipse([left_up, right_down], fill=color)
 
-    # 🆕 スコア表示ボックスのサイズを写真に合わせて最適化（確実に真っ黒にします）
+    # 3. 🆕 上部のスコア表示ボックスを確実に真っ黒で描画
+    box_height = max(40, int(h * 0.08))
+    draw.rectangle([(0, 0), (w, box_height)], fill=(20, 20, 20))
+    
+    # スコアテキストを白文字で描画
     score_display = f"POSTURE SCORE: {total_score}"
-    box_height = max(50, int(h * 0.12))
-    # 画像の最上部に黒い座布団を敷く
-    cv2.rectangle(annotated_image, (0, 0), (w, box_height), (0, 0, 0), -1)
-    # 文字をその上に描画
-    cv2.putText(annotated_image, score_display, (20, int(box_height * 0.65)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    # フォントサイズを自動調整
+    try:
+        font = ImageFont.load_default()
+    except:
+        font = None
+    draw.text((20, int(box_height * 0.25)), score_display, fill=(255, 255, 255), font=font)
 
     # 💾 ダウンロードデータ化
-    result_img = Image.fromarray(annotated_image)
     buf = io.BytesIO()
-    result_img.save(buf, format="PNG")
+    annotated_image.save(buf, format="PNG")
     byte_im = buf.getvalue()
 
     with col1:
