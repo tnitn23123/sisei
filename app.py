@@ -63,6 +63,7 @@ if uploaded_file is not None:
                 "P3": (int(w * (p3_x / 100)), int(h * 0.60)),
                 "P4": (int(w * (p4_x / 100)), int(h * 0.75))
             }
+            colors = {"P1": (0, 0, 255), "P2": (0, 255, 0), "P3": (255, 120, 0), "P4": (0, 255, 255)}
             
             head_error = abs(p2_x - p1_x)
             total_score = max(0, 100 - head_error * 4)
@@ -84,6 +85,7 @@ if uploaded_file is not None:
                 "P3": (int(w * 0.45), int(h * (p3_y / 100))),
                 "P4": (int(w * 0.4), int(h * (p4_y / 100)))
             }
+            colors = {"P1": (0, 0, 255), "P2": (0, 255, 0), "P3": (255, 120, 0), "P4": (0, 255, 255)}
             
             total_score = max(0, 100 - abs(p2_x - 50) * 5)
             status_text = "🟢 背すじが程よく伸びた良い姿勢バランスです！" if total_score >= 85 else "🔴 背中が丸まりすぎています。椅子に深く座りましょう。"
@@ -104,12 +106,13 @@ if uploaded_file is not None:
                 "P3": (int(cx - arm_len * np.cos(rad)), int(cy - arm_len * np.sin(rad))),
                 "P4": (int(cx + arm_len * np.cos(rad)), int(cy + arm_len * np.sin(rad)))
             }
+            colors = {"P1": (0, 0, 255), "P2": (0, 255, 0), "P3": (255, 120, 0), "P4": (255, 0, 255)}
             
             tilt_error = abs(shoulder_tilt)
             center_error = abs(p1_x - 50)
             total_score = max(0, int(100 - (tilt_error * 4.5) - (center_error * 1.5)))
             
-            status_text = "🟢 左右対称で非常にバランスが良い真っ直ぐな姿勢です！" if total_score >= 85 else (
+            status_text = "🟢 左右対称で非常にバランスが良い真っ整ぐな姿勢です！" if total_score >= 85 else (
                 "🟡 片方の肩が下がるなど、左右の重心が少し偏っています。" if total_score >= 60 else
                 "🔴 体の軸が左右に大きく傾いています。足を組む癖などを見直しましょう。"
             )
@@ -121,7 +124,7 @@ if uploaded_file is not None:
         elif total_score >= 60: st.warning(status_text)
         else: st.error(status_text)
 
-    # --- 🎨 画像描画処理（名前の文字を完全に削除） ---
+    # --- 🎨 画像描画処理（白い部分を完全に削除） ---
     pt_list = list(pts.values())
     
     # 骨格線の描画
@@ -133,16 +136,17 @@ if uploaded_file is not None:
         for i in range(len(pt_list) - 1):
             cv2.line(annotated_image, pt_list[i], pt_list[i+1], (200, 200, 200), 2, cv2.LINE_AA)
 
-    # 各パーツに円だけを描画（文字を入れる処理を消しました）
+    # 🆕 各パーツに「色付きの丸だけ」を描画（中心の白丸を消去）
     for name, pos in pts.items():
         color = colors.get(name, (255, 255, 255))
-        cv2.circle(annotated_image, pos, 8, color, -1)
-        cv2.circle(annotated_image, pos, 10, (255, 255, 255), 1)
+        cv2.circle(annotated_image, pos, 12, color, -1) # 純粋な色付き丸
 
-    # 上部の黒い文字盤ボックス
+    # 🆕 上部のスコア表示ボックス（完全に塗りつぶして白文字を読みやすく修正）
     score_display = f"POSTURE SCORE: {total_score}"
-    cv2.rectangle(annotated_image, (0, 0), (w, 60), (0, 0, 0), -1)
-    cv2.putText(annotated_image, score_display, (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    # 画像の最上部に黒い帯をしっかり上書き
+    cv2.rectangle(annotated_image, (0, 0), (w, int(h * 0.12)), (15, 15, 15), -1)
+    # クッキリとした白文字を描画
+    cv2.putText(annotated_image, score_display, (30, int(h * 0.08)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
     # 💾 ダウンロードデータ化
     result_img = Image.fromarray(annotated_image)
@@ -159,6 +163,7 @@ if uploaded_file is not None:
             file_name="posture_analysis.png",
             mime="image/png"
         )
+
 
 
 
