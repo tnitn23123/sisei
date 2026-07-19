@@ -1,6 +1,1 @@
 streamlit
-streamlit-webrtc
-mediapipe==0.10.14
-numpy
-pillow
-opencv-python-headless
