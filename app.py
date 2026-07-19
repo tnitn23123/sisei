@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 import cv2
 import numpy as np
@@ -41,10 +39,12 @@ if uploaded_file is not None:
     annotated_image = image_np.copy()
     
     pts = {}
+    
+    # 🆕 色の指定をRGBの正しい値に修正（純粋な単色ドットにします）
     colors = {
-        "P1": (0, 0, 255),    # 赤
-        "P2": (0, 255, 0),  # 緑
-        "P3": (255, 120, 0),  # 青
+        "P1": (255, 0, 0),    # 赤 (赤、緑、青の順)
+        "P2": (0, 255, 0),    # 緑
+        "P3": (0, 0, 255),    # 青
         "P4": (0, 255, 255)   # 黄
     }
     
@@ -65,7 +65,6 @@ if uploaded_file is not None:
                 "P3": (int(w * (p3_x / 100)), int(h * 0.60)),
                 "P4": (int(w * (p4_x / 100)), int(h * 0.75))
             }
-            colors = {"P1": (0, 0, 255), "P2": (0, 255, 0), "P3": (255, 120, 0), "P4": (0, 255, 255)}
             
             head_error = abs(p2_x - p1_x)
             total_score = max(0, 100 - head_error * 4)
@@ -87,7 +86,6 @@ if uploaded_file is not None:
                 "P3": (int(w * 0.45), int(h * (p3_y / 100))),
                 "P4": (int(w * 0.4), int(h * (p4_y / 100)))
             }
-            colors = {"P1": (0, 0, 255), "P2": (0, 255, 0), "P3": (255, 120, 0), "P4": (0, 255, 255)}
             
             total_score = max(0, 100 - abs(p2_x - 50) * 5)
             status_text = "🟢 背すじが程よく伸びた良い姿勢バランスです！" if total_score >= 85 else "🔴 背中が丸まりすぎています。椅子に深く座りましょう。"
@@ -108,13 +106,12 @@ if uploaded_file is not None:
                 "P3": (int(cx - arm_len * np.cos(rad)), int(cy - arm_len * np.sin(rad))),
                 "P4": (int(cx + arm_len * np.cos(rad)), int(cy + arm_len * np.sin(rad)))
             }
-            colors = {"P1": (0, 0, 255), "P2": (0, 255, 0), "P3": (255, 120, 0), "P4": (255, 0, 255)}
             
             tilt_error = abs(shoulder_tilt)
             center_error = abs(p1_x - 50)
             total_score = max(0, int(100 - (tilt_error * 4.5) - (center_error * 1.5)))
             
-            status_text = "🟢 左右対称で非常にバランスが良い真っ整ぐな姿勢です！" if total_score >= 85 else (
+            status_text = "🟢 左右対称で非常にバランスが良い真っ直ぐな姿勢です！" if total_score >= 85 else (
                 "🟡 片方の肩が下がるなど、左右の重心が少し偏っています。" if total_score >= 60 else
                 "🔴 体の軸が左右に大きく傾いています。足を組む癖などを見直しましょう。"
             )
@@ -126,29 +123,26 @@ if uploaded_file is not None:
         elif total_score >= 60: st.warning(status_text)
         else: st.error(status_text)
 
-    # --- 🎨 画像描画処理（白い部分を完全に削除） ---
+    # --- 🎨 画像描画処理（完全にリニューアル） ---
     pt_list = list(pts.values())
     
-    # 骨格線の描画
-    if "真正面から" in angle_choice and len(pt_list) == 4:
-        cv2.line(annotated_image, pt_list[0], pt_list[1], (200, 200, 200), 2, cv2.LINE_AA)
-        cv2.line(annotated_image, pt_list[1], pt_list[2], (200, 200, 200), 2, cv2.LINE_AA)
-        cv2.line(annotated_image, pt_list[1], pt_list[3], (200, 200, 200), 2, cv2.LINE_AA)
-    else:
-        for i in range(len(pt_list) - 1):
-            cv2.line(annotated_image, pt_list[i], pt_list[i+1], (200, 200, 200), 2, cv2.LINE_AA)
+    # 骨格線の描画（シンプルな細いグレーの線）
+    for i in range(len(pt_list) - 1):
+        cv2.line(annotated_image, pt_list[i], pt_list[i+1], (180, 180, 180), 2, cv2.LINE_AA)
 
-    # 🆕 各パーツに「色付きの丸だけ」を描画（中心の白丸を消去）
+    # 🆕 各パーツに「単色のドット」を描画（白丸のコードを完全に撤去）
     for name, pos in pts.items():
         color = colors.get(name, (255, 255, 255))
-        cv2.circle(annotated_image, pos, 12, color, -1) # 純粋な色付き丸
+        # 色が反転しないようRGBの順で綺麗に丸を描画
+        cv2.circle(annotated_image, pos, 12, (int(color[0]), int(color[1]), int(color[2])), -1)
 
-    # 🆕 上部のスコア表示ボックス（完全に塗りつぶして白文字を読みやすく修正）
+    # 🆕 スコア表示ボックスのサイズを写真に合わせて最適化（確実に真っ黒にします）
     score_display = f"POSTURE SCORE: {total_score}"
-    # 画像の最上部に黒い帯をしっかり上書き
-    cv2.rectangle(annotated_image, (0, 0), (w, int(h * 0.12)), (15, 15, 15), -1)
-    # クッキリとした白文字を描画
-    cv2.putText(annotated_image, score_display, (30, int(h * 0.08)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    box_height = max(50, int(h * 0.12))
+    # 画像の最上部に黒い座布団を敷く
+    cv2.rectangle(annotated_image, (0, 0), (w, box_height), (0, 0, 0), -1)
+    # 文字をその上に描画
+    cv2.putText(annotated_image, score_display, (20, int(box_height * 0.65)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
     # 💾 ダウンロードデータ化
     result_img = Image.fromarray(annotated_image)
@@ -165,6 +159,7 @@ if uploaded_file is not None:
             file_name="posture_analysis.png",
             mime="image/png"
         )
+
 
 
 
