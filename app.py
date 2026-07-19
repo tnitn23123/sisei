@@ -1,116 +1,180 @@
-import streamlit as st
+import cv2
+from ultralytics import YOLO
+import time
 import numpy as np
-from PIL import Image, ImageDraw
-import io  # 🆕 漏れていたパーツを確実に追加しました！
+import gradio as gr
+import threading
 
-# --- Streamlitのロゴやメニューを完全に隠す設定 ---
-hide_streamlit_style = """
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    stDeployButton {display:none;}
-    div[data-testid="stToolbar"] {display: none;}
-    </style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+# 1. AIモデルを読み込む
+model = YOLO("yolov8n.pt")
 
-st.title("✨ ストリームライン：多角分析姿勢モニター")
-st.write("下のカメラで撮影するか、写真をアップロードしたあと、スライダーで体の隙間に点を合わせてください。")
+ITEMS = {
+    "すべて同時に探す": "all",
+    "携帯電話": "cell phone",
+    "リモコン": "remote",
+    "ハサミ": "scissors",
+    "鍵": "keys",
+    "コップ": "cup",
+    "ボトル": "bottle",
+    "リュック": "backpack",
+    "バッグ/ポーチ": "handbag",
+    "本/手帳": "book",
+    "腕時計": "watch",
+    "パソコン": "laptop",
+    "傘": "umbrella"
+}
 
-# 📸 スマホカメラと画像アップロードの両方に対応
-img_file = st.camera_input("📸 ここを押して写真を撮影してください")
-uploaded_file = st.file_uploader("または、スマホ内の写真を選ぶ（jpg, png）", type=["jpg", "png", "jpeg"])
+current_target = "all"
+detection_logs = []
+is_running = True
 
-# どちらかに入力があれば処理を開始
-target_file = img_file if img_file is not None else uploaded_file
+# 2. 外部カメラ（iPhoneのIriunなど）を自動で探して起動
+def find_working_camera():
+    for index in range(5):
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            success, _ = cap.read()
+            if success:
+                print(f"👉 カメラ番号【 {index} 】が利用可能です。これを使用します。")
+                return cap
+            cap.release()
+    return None
 
-if target_file is not None:
-    image = Image.open(target_file).convert("RGB")
-    w, h = image.size
-    
-    # 画面を2分割（スマホでは自動で縦並びになります）
-    col1, col2 = st.columns(2)
-    
-    with col2:
-        st.subheader("⚙️ マーカー位置調整 & 採点")
-        st.write("スライダーを動かして、4つの点（上から頭・背中・手・膝）を写真の体の位置にピッタリ合わせてください。")
+cap = find_working_camera()
+
+# 🔄 裏側でiPhoneのカメラ映像をAI処理し続ける関数
+def video_processing_loop():
+    global current_target, detection_logs, is_running
+    if cap is None:
+        return
+
+    while is_running and cap.isOpened():
+        success, frame = cap.read()
+        if not success:
+            break
+
+        # 画質改善（くっきり化）
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        cl = clahe.apply(l)
+        limg = cv2.merge((cl, a, b))
+        enhanced_frame = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
         
-        # 指でも操作しやすいスライダー（初期位置を人間の体型に合わせました）
-        p1_x = st.slider("🔴 1番目の点（頭）の左右位置", 0, 100, 50)
-        p2_x = st.slider("🟢 2番目の点（背中）の左右位置", 0, 100, 50)
-        p3_x = st.slider("🔵 3番目の点（手）の左右位置", 0, 100, 48)
-        p4_x = st.slider("🟡 4番目の点（膝）の左右位置", 0, 100, 45)
+        kernel = np.array([[0, -0.5, 0], [-0.5, 3, -0.5], [0, -0.5, 0]])
+        sharpened_frame = cv2.filter2D(enhanced_frame, -1, kernel)
+
+        # AI検出 (RX 9070用に高画質指定)
+        results = model(sharpened_frame, imgsz=960, verbose=False)
         
-        # 採点ロジック（背中に対する頭のズレで計算）
-        head_error = abs(p2_x - p1_x)
-        total_score = max(0, 100 - head_error * 4)
-        
-        # 姿勢アドバイス
-        if total_score >= 85:
-            status_text = "🟢 頭と背中のラインが綺麗に揃っています！素晴らしい姿勢です。"
-            st.success(status_text)
-        elif total_score >= 60:
-            status_text = "🟡 頭が少し前に出て猫背・スマホ首の傾向があります。"
-            st.warning(status_text)
+        # resultsがリスト形式で返ってきた場合でも確実に0番目の要素を取り出す
+        if isinstance(results, list):
+            if len(results) == 0:
+                continue
+            result = results[0]
         else:
-            status_text = "🔴 強い猫背、または顎が前に突き出た姿勢です。骨盤を立てましょう。"
-            st.error(status_text)
+            result = results
+
+        boxes = result.boxes
+        found_this_frame = []
+
+        for box in boxes:
+            class_id = int(box.cls)
+            object_name = model.names[class_id]
+
+            if current_target != "all" and object_name != current_target:
+                continue
+
+            jp_name = "オブジェクト"
+            is_valid_item = False
+            for k, v in ITEMS.items():
+                if v == object_name:
+                    jp_name = k
+                    is_valid_item = True
+                    break
+
+            if is_valid_item:
+                # 二重リスト構造のエラーも出ないように平坦化して取り出す
+                xywh_list = box.xywh.tolist()[0]
+                x_center = int(xywh_list[0])
+                y_center = int(xywh_list[1])
+                
+                # ----------------------------------------------------
+                # ✨【組み込み箇所】TypeErrorバグを完全に回避する安全な座標計算
+                # ----------------------------------------------------
+                pos = (x_center, y_center)
+                radius = 20  # 例としてターゲットマークや円を描くための半径を指定
+                
+                # タプルから直接引き算・足し算をせず、展開（アンパック）して計算します
+                x, y = pos
+                left_up = (x - radius, y - radius)
+                right_down = (x + radius, y + radius)
+                
+                # 計算した安全な座標（left_up, right_down）を使って描画等を行う場合はここに追加できます
+                # 例: cv2.rectangle(sharpened_frame, left_up, right_down, (0, 255, 0), 2)
+                # ----------------------------------------------------
+
+                current_time = time.strftime("%H:%M:%S", time.localtime())
+                log_entry = f"[{current_time}] 🎯 【 {jp_name} 】を発見！ 位置(X:{x_center}, Y:{y_center})"
+                found_this_frame.append(log_entry)
+
+        if found_this_frame:
+            for log in reversed(found_this_frame):
+                if not detection_logs or detection_logs[0] != log:
+                    detection_logs.insert(0, log)
+            detection_logs = detection_logs[:10]
+
+        # PCの画面上にもリアルタイム映像ウインドウを出しておく
+        annotated_frame = result.plot()
+        cv2.imshow("AI Monitor Window", annotated_frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+# スレッドをスタート
+threading.Thread(target=video_processing_loop, daemon=True).start()
+
+def change_target(selected_jp_name):
+    global current_target
+    current_target = ITEMS[selected_jp_name]
+    return f"🔎 現在の探索ターゲット: 【 {selected_jp_name} 】"
+
+def get_logs():
+    global detection_logs
+    if not detection_logs:
+        return "まだ何も見つかっていません。iPhoneカメラの前にモノを置いてみてください。"
+    return "\n".join(detection_logs)
+
+# 🎨 アプリ画面（UI）のデザイン構築
+with gr.Blocks(title="部屋のモノ探偵 AI", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 🔍 部屋のモノ専用探偵 AI アプリ (外部カメラ連動版)")
+    gr.Markdown("iPhoneカメラの映像から、無くしたモノをAIが自動検知して操作画面に記録します。")
+    
+    with gr.Row():
+        with gr.Column(scale=1):
+            gr.Markdown("### ⚙️ コントロールパネル")
+            dropdown = gr.Dropdown(choices=list(ITEMS.keys()), value="すべて同時に探す", label="探したいモノを選択")
+            status_output = gr.Textbox(value="🔎 現在の探索ターゲット: 【 すべて同時に探す 】", label="ステータス", interactive=False)
             
-        st.metric(label="🏆 総合姿勢スコア", value=f"{total_score} / 100 点")
+        with gr.Column(scale=2):
+            gr.Markdown("### 📜 リアルタイム発見ログ（履歴）")
+            log_output = gr.TextArea(label="最新の10件", interactive=False, lines=10)
 
-    # --- 🎨 写真の上への描画処理 ---
-    annotated_image = image.copy()
-    draw = ImageDraw.Draw(annotated_image)
-    
-    # スライダーの値に合わせて点の座標を計算
-    pts = {
-        "P1": (int(w * (p1_x / 100)), int(h * 0.25)), # 頭
-        "P2": (int(w * (p2_x / 100)), int(h * 0.45)), # 背中
-        "P3": (int(w * (p3_x / 100)), int(h * 0.60)), # 手
-        "P4": (int(w * (p4_x / 100)), int(h * 0.75))  # 膝
-    }
-    
-    colors = {
-        "P1": (255, 0, 0),    # 赤
-        "P2": (0, 255, 0),    # 緑
-        "P3": (0, 120, 255),  # 青
-        "P4": (255, 215, 0)   # 黄
-    }
-    
-    # 1. 骨格ガイドラインを結ぶ（細いグレーの線）
-    pt_list = list(pts.values())
-    for i in range(len(pt_list) - 1):
-        draw.line([pt_list[i], pt_list[i+1]], fill=(180, 180, 180), width=3)
-        
-    # 2. 単色ドットを打つ（中心に白い穴がないきれいな丸）
-    radius = max(8, int(w * 0.015))
-    for name, pos in pts.items():
-        color = colors[name]
-        left_up = (pos - radius, pos - radius)
-        right_down = (pos + radius, pos + radius)
-        draw.ellipse([left_up, right_down], fill=color)
-        
-    # 3. 上部の文字盤（確実に真っ黒な帯に白文字）
-    box_height = max(40, int(h * 0.08))
-    draw.rectangle([(0, 0), (w, box_height)], fill=(20, 20, 20))
-    score_display = f"POSTURE SCORE: {total_score}"
-    draw.text((20, int(box_height * 0.25)), score_display, fill=(255, 255, 255))
+    # 1秒ごとに自動で画面のログ履歴を更新する仕組み
+    timer = gr.Timer(1.0)
+    timer.tick(fn=get_logs, outputs=log_output)
+    dropdown.change(fn=change_target, inputs=dropdown, outputs=status_output)
 
-    with col1:
-        st.subheader("📊 姿勢モニター（骨格ガイド）")
-        st.image(annotated_image, caption="スライダーを動かして隙間に点を合わせてください", use_container_width=True)
-        
-        # 💾 保存用データの作成
-        buf = io.BytesIO()
-        annotated_image.save(buf, format="PNG")
-        byte_im = buf.getvalue()
-        st.download_button(
-            label="💾 この測定結果を保存する",
-            data=byte_im,
-            file_name="posture_analysis.png",
-            mime="image/png"
-        )
+# 🌐 【ノートン対策・完全ローカル起動】
+if __name__ == "__main__":
+    if cap is None:
+        print("カメラを起動できなかったためアプリを開始できません。")
+    else:
+        # share=False にすることでノートンのブロックを完全に回避して安全にブラウザを開きます
+        demo.launch(server_name="127.0.0.1", server_port=7860, share=False, inline=False)
+
 
 
     
