@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 from PIL import Image, ImageDraw
+import io  # 🆕 漏れていたパーツを確実に追加しました！
 
 # --- Streamlitのロゴやメニューを完全に隠す設定 ---
 hide_streamlit_style = """
@@ -14,7 +15,7 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-st.title("多角分析姿勢モニター")
+st.title("✨ ストリームライン：多角分析姿勢モニター")
 st.write("下のカメラで撮影するか、写真をアップロードしたあと、スライダーで体の隙間に点を合わせてください。")
 
 # 📸 スマホカメラと画像アップロードの両方に対応
@@ -100,7 +101,7 @@ if target_file is not None:
         st.subheader("📊 姿勢モニター（骨格ガイド）")
         st.image(annotated_image, caption="スライダーを動かして隙間に点を合わせてください", use_container_width=True)
         
-        # 💾 スマホのカメラロールに保存できるボタン
+        # 💾 保存用データの作成
         buf = io.BytesIO()
         annotated_image.save(buf, format="PNG")
         byte_im = buf.getvalue()
