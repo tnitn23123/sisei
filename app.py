@@ -1,76 +1,152 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
-import av
-import cv2
-import mediapipe as mp
+import streamlit.components.v1 as components
 
-# --- Streamlitのロゴやメニューを隠す設定 ---
+# --- Streamlitのロゴやメニューを完全に隠す設定 ---
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     stDeployButton {display:none;}
+    div[data-testid="stToolbar"] {display: none;}
     </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 st.title("✨ ストリームライン：AIリアルタイム姿勢モニター")
-st.write("カメラをオンにすると、AIが自動的に骨格（頭・肩・腰・膝）を検出してリアルタイムにガイド線を引きます。")
+st.write("カメラがオンになると、AI（MoveNet）が自動的に頭、肩、腰、膝を検出し、姿勢が良いか悪いかを判定します。")
 
-# MediaPipe Pose（骨格検出AI）の準備
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-mp_drawing = mp.solutions.drawing_utils
+# 🆕 JavaScriptベースの超軽量・超高速リアルタイムAI骨格検出システム
+html_code = """
+<!DOCTYPE html>
+<html>
+<head>
+    <!-- TensorFlow.js と MoveNet AIモデルの読み込み -->
+    <script src="https://jsdelivr.net"></script>
+    <script src="https://jsdelivr.net"></script>
+    <script src="https://jsdelivr.net"></script>
+    <script src="https://jsdelivr.net"></script>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #fff; margin: 0; padding: 0; }
+        #video-container { position: relative; width: 640px; height: 480px; background: #222; border-radius: 8px; overflow: hidden; }
+        video { transform: scaleX(-1); width: 640px; height: 480px; position: absolute; top:0; left:0; }
+        canvas { transform: scaleX(-1); position: absolute; top:0; left:0; z-index: 10; }
+        #status-box { width: 620px; margin-top: 15px; padding: 15px; border-radius: 8px; font-size: 20px; font-weight: bold; text-align: center; background: #f0f2f6; }
+        .good { background: #d4edda !important; color: #155724; }
+        .poor { background: #f8d7da !important; color: #721c24; }
+    </style>
+</head>
+<body>
 
-class PostureProcessor(VideoProcessorBase):
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        # カメラ映像をNumPy配列（BGR形式）に変換
-        img = frame.to_ndarray(format="bgr24")
-        
-        # AI処理のためにRGBに変換
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        results = pose.process(img_rgb)
-        
-        # 骨格が検出された場合、映像の上に点と線を自動描画
-        if results.pose_landmarks:
-            mp_drawing.draw_landmarks(
-                img, 
-                results.pose_landmarks, 
-                mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=4), # 点は緑
-                connection_drawing_spec=mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2) # 線は白
-            )
-            
-            # --- 簡易的な自動姿勢判定 ---
-            landmarks = results.pose_landmarks.landmark
-            # 鼻（頭）、左肩、左腰のランドマークを取得
-            nose = landmarks[mp_pose.PoseLandmark.NOSE]
-            shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
-            hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP]
-            
-            # 横を向いている時の、腰に対する頭の突き出し度合い（簡易判定）
-            diff = abs(nose.x - hip.x)
-            if diff > 0.15:
-                status_text = "⚠️ POOR POSTURE (NEKOBE)"
-                color = (0, 0, 255) # 赤
-            else:
-                status_text = "GOOD POSTURE"
-                color = (0, 255, 0) # 緑
+    <div id="video-container">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="output"></canvas>
+    </div>
+    <div id="status-box">🔄 AIモデルを読み込んでいます。カメラを許可してください...</div>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('output');
+        const ctx = canvas.getContext('2d');
+        const statusBox = document.getElementById('status-box');
+        let detector;
+
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+            video.srcObject = stream;
+            return new Promise((resolve) => { video.onloadedmetadata = () => { resolve(video); }; });
+        }
+
+        async function init() {
+            // 軽量かつ高速な骨格検出AI「MoveNet」を初期化
+            detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+                modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
+            });
+            await setupCamera();
+            video.play();
+            canvas.width = 640;
+            canvas.height = 480;
+            detectPose();
+        }
+
+        async function detectPose() {
+            const poses = await detector.estimatePoses(video);
+            ctx.clearRect(0, 0, 640, 480);
+
+            if (poses.length > 0) {
+                const keypoints = poses[0].keypoints;
                 
-            # 映像の左上にリアルタイム判定を表示
-            cv2.putText(img, status_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3, cv2.LINE_AA)
+                // 主要な部位のポイントを取得 (MoveNetのインデックス: 0=鼻, 5=左肩, 6=右肩, 11=左腰, 12=右腰, 13=左膝, 14=右膝)
+                const nose = keypoints[0];
+                const leftShoulder = keypoints[5];
+                const rightShoulder = keypoints[6];
+                const leftHip = keypoints[11];
+                const rightHip = keypoints[12];
+                const leftKnee = keypoints[13];
+                const rightKnee = keypoints[14];
 
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+                // 骨格を描画する関数
+                function drawLine(p1, p2) {
+                    if (p1.score > 0.3 && p2.score > 0.3) {
+                        ctx.beginPath();
+                        ctx.moveTo(p1.x, p1.y);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.strokeStyle = '#bcbcbc';
+                        ctx.lineWidth = 3;
+                        ctx.stroke();
+                    }
+                }
 
-# リアルタイムビデオ配信コンポーネントを画面に設置
-webrtc_streamer(
-    key="posture-analysis",
-    video_processor_factory=PostureProcessor,
-    media_stream_constraints={"video": True, "audio": False}, # カメラのみ（音声オフ）
-    rtc_configuration={"iceServers": [{"urls": ["stun:://google.com"]}]} # 接続用サーバー設定
-)
+                function drawKeypoint(kp, color) {
+                    if (kp.score > 0.3) {
+                        ctx.beginPath();
+                        ctx.arc(kp.x, kp.y, 8, 0, 2 * Math.PI);
+                        ctx.fillStyle = color;
+                        ctx.fill();
+                    }
+                }
 
+                // 線をつなぐ
+                drawLine(leftShoulder, rightShoulder);
+                drawLine(leftShoulder, leftHip);
+                drawLine(rightShoulder, rightHip);
+                drawLine(leftHip, leftKnee);
+                drawLine(rightHip, rightKnee);
+
+                // 単色ドットを打つ (上から順に 赤、緑、青、黄)
+                drawKeypoint(nose, '#ff0000');           // 頭(鼻): 赤
+                drawKeypoint(leftShoulder, '#00ff00');   // 背中(肩): 緑
+                drawKeypoint(leftHip, '#0078ff');        // 手元(腰): 青
+                drawKeypoint(leftKnee, '#ffd700');       // 膝: 黄
+                drawKeypoint(rightShoulder, '#00ff00');
+                drawKeypoint(rightHip, '#0078ff');
+                drawKeypoint(rightKnee, '#ffd700');
+
+                // 📐 姿勢の良し悪しをリアルタイム自動判定
+                if (nose.score > 0.3 && leftHip.score > 0.3) {
+                    // 横向き・斜め向き時の頭の前方突き出しを計算
+                    const diffX = Math.abs(nose.x - leftHip.x);
+                    if (diffX > 75) { 
+                        status_text = "🔴 姿勢が崩れています！背中が丸まっているか、頭が前に出ています。";
+                        statusBox.className = "poor";
+                    } else {
+                        status_text = "🟢 素晴らしい姿勢です！そのままキープしましょう。";
+                        statusBox.className = "good";
+                    }
+                    statusBox.innerText = status_text;
+                }
+            }
+            requestAnimationFrame(detectPose);
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
+"""
+
+# HTMLコンポーネントを画面に埋め込み
+components.html(html_code, height=600)
 
 
 
